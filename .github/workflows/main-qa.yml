@@ -5,7 +5,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout blog repo
+      - name: Checkout private repo
         uses: actions/checkout@main
         with:
           repository: aspose-knowledge-base/kb-aspose
