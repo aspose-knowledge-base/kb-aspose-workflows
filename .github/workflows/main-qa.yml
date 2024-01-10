@@ -1,6 +1,9 @@
 name: CI-CD-QA
 
-on: push
+on:
+  repository_dispatch:
+    types: [trigger-workflow]
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
