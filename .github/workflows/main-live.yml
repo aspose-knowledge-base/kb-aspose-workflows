@@ -1,8 +1,6 @@
-name: CI-CD-QA
+name: CI-CD-LIVE
 
-on:
-  repository_dispatch:
-    types: [trigger-workflow]
+on: workflow_dispatch
 
 jobs:
   deploy:
