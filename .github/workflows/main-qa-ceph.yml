@@ -1,0 +1,44 @@
+name: CI-CD-QA-CEPH
+
+on:
+  repository_dispatch:
+    types: [trigger-workflow]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout private repo
+        uses: actions/checkout@main
+        with:
+          repository: aspose-knowledge-base/kb-aspose
+          token: ${{ secrets.REPO_TOKEN }}
+          #submodules: true  # Fetch Hugo themes (true OR recursive)
+          fetch-depth: 0    # Fetch all history for .GitInfo and .Lastmod
+
+      - name: Setup hugo
+        uses: peaceiris/actions-hugo@v2
+        with:
+          hugo-version: '0.110.0'
+          
+      - name: Build
+        run: hugo --config config-qa.toml --minify
+        
+      - name: Sync to Ceph S3
+        run: |
+          aws s3 sync ./public/ s3://qa-kb-aspose-com/ \
+            --endpoint-url https://s3-qa.dynabic.com \
+            --acl public-read \
+            --delete
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CEPH_S3_QA_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CEPH_S3_QA_SECRET_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ENDPOINT_URL: https://s3-admin-qa.dynabic.com
+ 
+      - name: Purge BunnyCDN Cache
+        run: |
+           curl -siG \
+            -H "X-Api-Key: ${{ secrets.BUNNY_API_KEY }}" \
+            --data-urlencode "url=https://kb-qa.aspose.com" \
+            "https://api.dynabic.com/bn/purge?async=true"
