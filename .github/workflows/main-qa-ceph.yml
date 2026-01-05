@@ -1,6 +1,7 @@
 name: CI-CD-QA-CEPH
 
 on:
+  workflow_dispatch:
   repository_dispatch:
     types: [trigger-workflow]
 
