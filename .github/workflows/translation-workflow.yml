@@ -1,0 +1,259 @@
+name: Automated Translation Workflow
+
+on:
+  # Scheduled to run on weekdays at 3 AM UTC (Monday-Friday, 1 hour after content rewriter)
+  schedule:
+    - cron: '0 3 * * 1-5'
+  
+  # Allow manual triggering for testing
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: 'Target date for article detection (YYYY-MM-DD, defaults to yesterday)'
+        required: false
+        type: string
+
+env:
+  NODE_VERSION: '18'
+
+jobs:
+  translate-articles:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout private repo
+      uses: actions/checkout@main
+      with:
+        repository: aspose-knowledge-base/kb-aspose
+        fetch-depth: 0  # Full history for git operations
+        token: ${{ secrets.REPO_TOKEN }}
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+      
+    - name: Install Node.js dependencies
+      run: |
+        cd .github/scripts
+        npm install
+      
+    - name: Configure Git
+      run: |
+        git config --global user.name "Assad Mahmood"
+        git config --global user.email "assadvirgo@gmail.com"
+        # Ensure consistent line endings (scripts now handle both Unix and Windows)
+        git config --global core.autocrlf false
+      
+    - name: Set target date
+      id: set-date
+      run: |
+        if [ -n "${{ github.event.inputs.target_date }}" ]; then
+          TARGET_DATE="${{ github.event.inputs.target_date }}"
+        else
+          TARGET_DATE=$(date -d "yesterday" +%Y-%m-%d)
+        fi
+        TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+        echo "target_date=$TARGET_DATE" >> $GITHUB_OUTPUT
+        echo "timestamp=$TIMESTAMP" >> $GITHUB_OUTPUT
+        echo "Target date set to: $TARGET_DATE"
+
+    - name: Detect articles for translation
+      id: detect-articles
+      run: |
+        cd .github/scripts
+        node translation-detector.js ${{ steps.set-date.outputs.target_date }}
+        
+        # Check if any articles were found
+        if [ ! -f "../../translation-tasks.json" ]; then
+          echo "No articles found for translation"
+          echo "found=false" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        
+        # Check if there are tasks in the file
+        TASK_COUNT=$(cat ../../translation-tasks.json | jq '.totalTasks')
+        if [ "$TASK_COUNT" -eq 0 ]; then
+          echo "No translation tasks generated"
+          echo "found=false" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        
+        # Get summary information
+        JAVA_COUNT=$(cat ../../translation-tasks.json | jq '[.tasks[] | select(.platform == "java")] | length')
+        NET_COUNT=$(cat ../../translation-tasks.json | jq '[.tasks[] | select(.platform == "net")] | length')
+        
+        echo "found=true" >> $GITHUB_OUTPUT
+        echo "task_count=$TASK_COUNT" >> $GITHUB_OUTPUT
+        echo "java_count=$JAVA_COUNT" >> $GITHUB_OUTPUT
+        echo "net_count=$NET_COUNT" >> $GITHUB_OUTPUT
+        echo "Found $TASK_COUNT articles for translation (Java: $JAVA_COUNT, .NET: $NET_COUNT)"
+
+    - name: Prepare branch name
+      if: steps.detect-articles.outputs.found == 'true'
+      id: create-branch
+      run: |
+        BRANCH_NAME="translation-update-${{ steps.set-date.outputs.target_date }}-$(date +%s)"
+        echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+        echo "Prepared branch name: $BRANCH_NAME"
+
+    - name: Process translations
+      if: steps.detect-articles.outputs.found == 'true'
+      env:
+        LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      run: |
+        cd .github/scripts
+        node translation-processor.js
+      
+    - name: Validate translations
+      if: steps.detect-articles.outputs.found == 'true'
+      run: |
+        cd .github/scripts
+        node translation-validator.js
+
+    - name: Generate PR description
+      if: steps.detect-articles.outputs.found == 'true'
+      id: pr-description
+      run: |
+        # Read translation tasks and validation report
+        TASKS=$(cat translation-tasks.json)
+        VALIDATION_REPORT=""
+        if [ -f ".github/scripts/validation-report.json" ]; then
+          VALIDATION_REPORT=$(cat .github/scripts/validation-report.json)
+        fi
+        
+        # Calculate total files created/updated
+        TOTAL_FILES=$((${{ steps.detect-articles.outputs.task_count }} * 27))
+        
+        # Generate PR description
+        cat > pr-description.md << EOF
+        ## 🌍 Automated Translation Update
+        
+        This PR contains automated translations for articles modified on **${{ steps.set-date.outputs.target_date }}**.
+        
+        ### 📊 Summary
+        - **Articles translated**: ${{ steps.detect-articles.outputs.task_count }} articles
+        - **Platforms**: Java (${{ steps.detect-articles.outputs.java_count }}), .NET (${{ steps.detect-articles.outputs.net_count }})
+        - **Target languages**: 27 languages (ar, bg, cs, de, el, es, fa, fr, hi, hr, hu, hy, id, it, ja, ko, lt, nl, pl, pt, ru, sv, th, tr, uk, vi, zh)
+        - **Total files created/updated**: ~$TOTAL_FILES files
+        - **Branch**: \`${{ steps.create-branch.outputs.branch_name }}\`
+        - **Timestamp**: ${{ steps.set-date.outputs.timestamp }}
+        
+        ### 🔄 Changes Made
+        - ✅ Translated all articles to 27 supported languages
+        - ✅ Preserved all technical content (class names, API references, URLs)
+        - ✅ Maintained Hugo shortcodes and gist references
+        - ✅ Preserved list structure and numbering
+        - ✅ Kept code blocks and technical examples intact
+        - ✅ Maintained proper markdown formatting
+        
+        ### 📄 Translated Articles
+        EOF
+        
+        # Add article list from translation tasks
+        echo "$TASKS" | jq -r '.tasks[] | "- **\(.title)** (\(.platform | ascii_upcase)) → 27 languages"' >> pr-description.md
+        
+        # Add validation results if available
+        if [[ -n "$VALIDATION_REPORT" && "$VALIDATION_REPORT" != "null" ]]; then
+          VALIDATION_ISSUES=$(echo "$VALIDATION_REPORT" | jq '.totalIssues // 0')
+          if [ "$VALIDATION_ISSUES" -gt 0 ]; then
+            echo -e "\n### ⚠️ Validation Results" >> pr-description.md
+            echo "- Total validation issues detected: $VALIDATION_ISSUES" >> pr-description.md
+            echo "- Please review validation report in artifacts for details" >> pr-description.md
+          else
+            echo -e "\n### ✅ Validation Results" >> pr-description.md
+            echo "- All translations passed validation checks" >> pr-description.md
+            echo "- No structural or technical element issues detected" >> pr-description.md
+          fi
+        fi
+        
+        echo -e "\n### 🌐 Language Coverage" >> pr-description.md
+        cat >> pr-description.md << 'EOF'
+        
+        | Region | Languages |
+        |--------|-----------|
+        | **Middle East & Africa** | Arabic (ar), Persian/Farsi (fa) |
+        | **Europe** | Bulgarian (bg), Czech (cs), German (de), Greek (el), Spanish (es), French (fr), Croatian (hr), Hungarian (hu), Armenian (hy), Italian (it), Lithuanian (lt), Dutch (nl), Polish (pl), Portuguese (pt), Russian (ru), Swedish (sv), Turkish (tr), Ukrainian (uk) |
+        | **Asia** | Hindi (hi), Indonesian (id), Japanese (ja), Korean (ko), Thai (th), Vietnamese (vi), Chinese (zh) |
+        
+        ### ✅ Review Checklist
+        - [ ] Translation quality maintained across all languages
+        - [ ] Technical terminology preserved correctly
+        - [ ] Code samples and API references intact
+        - [ ] Hugo shortcodes functioning properly
+        - [ ] List formatting and structure preserved
+        - [ ] Links and cross-references working
+        - [ ] No broken markdown formatting
+        - [ ] Gist embeds displaying correctly
+        
+        ### 📋 Quality Assurance
+        - **Content Structure**: All headings, lists, and paragraphs properly translated
+        - **Technical Preservation**: Class names, method names, and API references unchanged
+        - **Link Integrity**: All internal and external links maintained
+        - **Code Safety**: All code blocks, gists, and technical examples preserved
+        - **SEO Optimization**: Meta descriptions and keywords translated appropriately
+        
+        ---
+        *This PR was automatically generated by the Translation workflow. Please review the changes and merge when ready.*
+        EOF
+      
+    - name: Prepare commit message
+      if: steps.detect-articles.outputs.found == 'true'
+      id: commit-message
+      run: |
+        COMMIT_MSG="Automated translation update - ${{ steps.set-date.outputs.target_date }}
+        
+        - Translated ${{ steps.detect-articles.outputs.task_count }} articles to all 27 supported languages
+        - Java articles: ${{ steps.detect-articles.outputs.java_count }}
+        - .NET articles: ${{ steps.detect-articles.outputs.net_count }}
+        - Preserved all technical content, code samples, and Hugo shortcodes
+        - Maintained proper list formatting and markdown structure
+        - Updated articles from ${{ steps.set-date.outputs.target_date }}
+        
+        Total files created/updated: ~$((${{ steps.detect-articles.outputs.task_count }} * 27))"
+        
+        echo "commit_message<<EOF" >> $GITHUB_OUTPUT
+        echo "$COMMIT_MSG" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+      
+    - name: Create Pull Request
+      if: steps.detect-articles.outputs.found == 'true'
+      id: create-pr
+      uses: peter-evans/create-pull-request@v5
+      with:
+        token: ${{ secrets.REPO_TOKEN }}
+        commit-message: ${{ steps.commit-message.outputs.commit_message }}
+        title: "🌍 Automated Translation Update - ${{ steps.set-date.outputs.target_date }}"
+        body-path: pr-description.md
+        branch: ${{ steps.create-branch.outputs.branch_name }}
+        base: master
+        labels: |
+          automated-translation
+          needs-review
+          multilingual
+          content-update
+        draft: false
+        delete-branch: true
+      
+    - name: Output results
+      if: always()
+      run: |
+        if [ "${{ steps.detect-articles.outputs.found }}" == "true" ]; then
+          echo "✅ Translation workflow completed successfully"
+          echo "📋 Branch created: ${{ steps.create-branch.outputs.branch_name }}"
+          echo "📊 Articles: ${{ steps.detect-articles.outputs.task_count }} (Java: ${{ steps.detect-articles.outputs.java_count }}, .NET: ${{ steps.detect-articles.outputs.net_count }})"
+          echo "🌍 Total files: ~$((${{ steps.detect-articles.outputs.task_count }} * 27))"
+        else
+          echo "ℹ️ No articles found for translation on ${{ steps.set-date.outputs.target_date }}"
+        fi
+      
+    - name: Upload artifacts
+      if: steps.detect-articles.outputs.found == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: translation-reports
+        path: |
+          translation-tasks.json
+          .github/scripts/validation-report.json
+          .github/scripts/processing-report.json
+        retention-days: 30

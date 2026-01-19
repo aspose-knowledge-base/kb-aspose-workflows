@@ -1,0 +1,217 @@
+name: Automated PR Review and Merge
+
+on:
+  # This workflow runs in kb-aspose-workflows but monitors kb-aspose repo
+  # Triggered manually or via repository_dispatch from kb-aspose
+  repository_dispatch:
+    types: [pr-opened, pr-updated]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to validate and review in kb-aspose repo'
+        required: true
+        type: number
+
+env:
+  NODE_VERSION: '18'
+  HUGO_VERSION: '0.110.0'
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  pr-review:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Get PR details
+      id: pr-details
+      uses: actions/github-script@v7
+      env:
+        MANUAL_PR_NUMBER: ${{ inputs.pr_number }}
+      with:
+        github-token: ${{ secrets.REPO_TOKEN }}
+        script: |
+          let prNumber, prData;
+          const targetOwner = 'aspose-knowledge-base';
+          const targetRepo = 'kb-aspose';
+          
+          if (context.eventName === 'workflow_dispatch') {
+            // Manual trigger with PR number
+            prNumber = parseInt(process.env.MANUAL_PR_NUMBER);
+            const { data } = await github.rest.pulls.get({
+              owner: targetOwner,
+              repo: targetRepo,
+              pull_number: prNumber
+            });
+            prData = data;
+          } else if (context.eventName === 'repository_dispatch') {
+            // Triggered by repository_dispatch from kb-aspose
+            prNumber = context.payload.client_payload.pr_number;
+            const { data } = await github.rest.pulls.get({
+              owner: targetOwner,
+              repo: targetRepo,
+              pull_number: prNumber
+            });
+            prData = data;
+          } else {
+            throw new Error('Unexpected event type');
+          }
+          
+          core.setOutput('pr_number', prNumber);
+          core.setOutput('head_ref', prData.head.ref);
+          core.setOutput('head_sha', prData.head.sha);
+          core.setOutput('base_ref', prData.base.ref);
+          core.setOutput('pr_author', prData.user.login);
+          core.setOutput('target_owner', targetOwner);
+          core.setOutput('target_repo', targetRepo);
+          
+          console.log(`Processing PR #${prNumber} in ${targetOwner}/${targetRepo}`);
+          console.log(`Author: ${prData.user.login}`);
+          console.log(`Head: ${prData.head.ref} (${prData.head.sha})`);
+          console.log(`Base: ${prData.base.ref}`);
+
+    - name: Checkout PR branch from kb-aspose
+      uses: actions/checkout@main
+      with:
+        repository: aspose-knowledge-base/kb-aspose
+        token: ${{ secrets.REPO_TOKEN }}
+        fetch-depth: 0
+        ref: ${{ steps.pr-details.outputs.head_sha }}
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Setup Hugo
+      uses: peaceiris/actions-hugo@v2
+      with:
+        hugo-version: ${{ env.HUGO_VERSION }}
+
+    - name: Test Hugo build (QA config)
+      id: build-qa
+      run: |
+        echo "Testing Hugo build with QA configuration..."
+        if hugo --config config-qa.toml --buildDrafts=false --minify --destination=public-qa-test; then
+          echo "✅ QA build successful"
+          echo "status=success" >> $GITHUB_OUTPUT
+        else
+          echo "❌ QA build failed"
+          echo "status=failed" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+
+    - name: Comment build results
+      if: always()
+      uses: actions/github-script@v7
+      env:
+        PR_NUMBER: ${{ steps.pr-details.outputs.pr_number }}
+        BUILD_QA_STATUS: ${{ steps.build-qa.outputs.status || 'unknown' }}
+        TARGET_OWNER: ${{ steps.pr-details.outputs.target_owner }}
+        TARGET_REPO: ${{ steps.pr-details.outputs.target_repo }}
+      with:
+        github-token: ${{ secrets.REPO_TOKEN }}
+        script: |
+          const prNumber = parseInt(process.env.PR_NUMBER);
+          const qaStatus = process.env.BUILD_QA_STATUS;
+          const targetOwner = process.env.TARGET_OWNER;
+          const targetRepo = process.env.TARGET_REPO;
+          
+          const qaEmoji = qaStatus === 'success' ? '✅' : '❌';
+          const overallStatus = qaStatus === 'success';
+          
+          const report = `## 🔍 PR Validation Results
+          
+          **Hugo Build Status:**
+          - ${qaEmoji} QA Build: ${qaStatus}
+          
+          ${overallStatus ? '✅ **All checks passed!** PR is ready to merge.' : '❌ **Build failed.** Please fix the issues before merging.'}
+          
+          ---
+          *Automated validation by PR Review Workflow*`;
+          
+          try {
+            await github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: targetOwner,
+              repo: targetRepo,
+              body: report
+            });
+          } catch (error) {
+            console.error('Error posting validation comment:', error);
+          }
+
+    - name: Auto-merge if builds pass
+      if: always()
+      uses: actions/github-script@v7
+      env:
+        PR_NUMBER: ${{ steps.pr-details.outputs.pr_number }}
+        PR_AUTHOR: ${{ steps.pr-details.outputs.pr_author }}
+        BUILD_STATUS: ${{ steps.build-qa.outputs.status }}
+        TARGET_OWNER: ${{ steps.pr-details.outputs.target_owner }}
+        TARGET_REPO: ${{ steps.pr-details.outputs.target_repo }}
+      with:
+        github-token: ${{ secrets.REPO_TOKEN }}
+        script: |
+          const prNumber = parseInt(process.env.PR_NUMBER);
+          const prAuthor = process.env.PR_AUTHOR;
+          const buildStatus = process.env.BUILD_STATUS;
+          const targetOwner = process.env.TARGET_OWNER;
+          const targetRepo = process.env.TARGET_REPO;
+          
+          console.log(`🔍 Auto-merge check:`);
+          console.log(`  - Repository: ${targetOwner}/${targetRepo}`);
+          console.log(`  - PR Number: ${prNumber}`);
+          console.log(`  - PR Author: ${prAuthor}`);
+          console.log(`  - Build Status: ${buildStatus}`);
+          console.log(`  - Build Success: ${buildStatus === 'success'}`);
+          
+          // Check if build was successful
+          if (buildStatus !== 'success') {
+            console.log(`⏭️ Skipping auto-merge: Build status is '${buildStatus}', not 'success'`);
+            return;
+          }
+          
+          try {
+            console.log(`✅ Hugo build passed. Auto-merging PR #${prNumber} in ${targetOwner}/${targetRepo}...`);
+            
+            const { data: pr } = await github.rest.pulls.get({
+              owner: targetOwner,
+              repo: targetRepo,
+              pull_number: prNumber
+            });
+            
+            console.log(`📋 PR state: ${pr.state}, mergeable: ${pr.mergeable}, mergeable_state: ${pr.mergeable_state}`);
+            
+            await github.rest.pulls.merge({
+              owner: targetOwner,
+              repo: targetRepo,
+              pull_number: prNumber,
+              commit_title: `Auto-merge: ${pr.title}`,
+              commit_message: `Automated merge after successful Hugo build.\n\n- ✅ Hugo QA build successful`,
+              merge_method: 'squash'
+            });
+            
+            console.log(`✅ PR #${prNumber} merged successfully in ${targetOwner}/${targetRepo}`);
+            
+            await github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: targetOwner,
+              repo: targetRepo,
+              body: `✅ **Auto-merged successfully!**\n\nPR was automatically merged after successful Hugo build.`
+            });
+            
+          } catch (error) {
+            console.error(`❌ Failed to auto-merge PR #${prNumber}:`, error);
+            console.error(`Error details:`, JSON.stringify(error, null, 2));
+            
+            await github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: targetOwner,
+              repo: targetRepo,
+              body: `⚠️ **Auto-merge failed**: ${error.message}\n\nPlease merge manually.`
+            });
+          }
