@@ -171,15 +171,12 @@ jobs:
           # Push to remote
           git push origin ${{ steps.create-branch.outputs.branch_name }}
           
-          # Create PR using GitHub CLI
+          # Create PR using GitHub CLI (without labels to avoid errors)
           gh pr create \
             --title "🤖 Automated Content Enhancement - ${{ steps.create-branch.outputs.current_date }}" \
             --body-file pr-description.md \
             --base master \
             --head ${{ steps.create-branch.outputs.branch_name }} \
-            --label "automated-content-update" \
-            --label "needs-review" \
-            --label "content-enhancement" \
             --repo aspose-knowledge-base/kb-aspose
       
       - name: Output results
