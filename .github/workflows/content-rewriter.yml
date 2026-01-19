@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout private repo
+      - name: Checkout private repo (kb-aspose)
         uses: actions/checkout@main
         with:
           repository: aspose-knowledge-base/kb-aspose
@@ -156,20 +156,31 @@ jobs:
       - name: Create Pull Request
         if: steps.select-articles.outputs.selected == 'true'
         id: create-pr
-        uses: peter-evans/create-pull-request@v5
-        with:
-          token: ${{ secrets.REPO_TOKEN }}
-          commit-message: ${{ steps.commit-message.outputs.commit_message }}
-          title: "🤖 Automated Content Enhancement - ${{ steps.create-branch.outputs.current_date }}"
-          body-path: pr-description.md
-          branch: ${{ steps.create-branch.outputs.branch_name }}
-          base: master
-          labels: |
-            automated-content-update
-            needs-review
-            content-enhancement
-          draft: false
-          delete-branch: true
+        env:
+          GH_TOKEN: ${{ secrets.REPO_TOKEN }}
+        run: |
+          # Create and checkout new branch
+          git checkout -b ${{ steps.create-branch.outputs.branch_name }}
+          
+          # Stage all changes
+          git add .
+          
+          # Commit changes
+          git commit -m "${{ steps.commit-message.outputs.commit_message }}" || echo "No changes to commit"
+          
+          # Push to remote
+          git push origin ${{ steps.create-branch.outputs.branch_name }}
+          
+          # Create PR using GitHub CLI
+          gh pr create \
+            --title "🤖 Automated Content Enhancement - ${{ steps.create-branch.outputs.current_date }}" \
+            --body-file pr-description.md \
+            --base master \
+            --head ${{ steps.create-branch.outputs.branch_name }} \
+            --label "automated-content-update" \
+            --label "needs-review" \
+            --label "content-enhancement" \
+            --repo aspose-knowledge-base/kb-aspose
       
       - name: Output results
         if: always()
