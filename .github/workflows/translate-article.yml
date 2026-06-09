@@ -1,0 +1,57 @@
+name: Translate KB Article
+
+on:
+  workflow_dispatch:
+    inputs:
+      article_path:
+        description: "Relative path to the English article (e.g. content/en/slides/net/article.md)"
+        required: true
+        type: string
+
+jobs:
+  translate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout content repo (kb-aspose)
+        uses: actions/checkout@v4
+        with:
+          repository: aspose-knowledge-base/kb-aspose
+          token: ${{ secrets.REPO_TOKEN }}
+          fetch-depth: 1
+          path: kb-aspose
+
+      - name: Checkout agent repo (GitLab)
+        run: |
+          git clone https://${{ secrets.GITLAB_DEPLOY_USERNAME }}:${{ secrets.GITLAB_DEPLOY_TOKEN }}@gitlab.recruitize.ai/sialkot/lahore-aspose/lahore-kb-team/autonomous-kb-article-generator-and-translator.git agent-repo
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests pyyaml
+
+      - name: Run translation
+        env:
+          ONLINE_LLM_TOKEN: ${{ secrets.ONLINE_LLM_TOKEN }}
+        run: |
+          cd agent-repo
+          python3 -m scripts.run_kb_agent \
+            --translate-only \
+            --translate \
+            --translation-engine llm \
+            --translation-languages ar,bg,cs,de,el,es,fa,fr,hi,hr,hu,hy,id,it,ja,ko,lt,nl,pl,pt,ru,sv,th,tr,uk,vi,zh \
+            --translation-source "${{ github.workspace }}/kb-aspose/${{ github.event.inputs.article_path }}" \
+            --content-root "${{ github.workspace }}/kb-aspose/content"
+
+      - name: Commit and push translations
+        run: |
+          cd kb-aspose
+          git config user.name "kb-translate-bot"
+          git config user.email "bot@aspose.com"
+          git add content/
+          git diff --cached --quiet && echo "No new translations to commit." || \
+            git commit -m "Auto-translate: ${{ github.event.inputs.article_path }}"
+          git push
