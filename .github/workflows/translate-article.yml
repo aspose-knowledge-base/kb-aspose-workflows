@@ -7,6 +7,11 @@ on:
         description: "Relative path to the English article (e.g. content/en/slides/net/article.md)"
         required: true
         type: string
+      overwrite:
+        description: "Overwrite existing translations (re-translate all languages)"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   translate:
@@ -44,7 +49,8 @@ jobs:
             --translation-engine llm \
             --translation-languages ar,bg,cs,de,el,es,fa,fr,hi,hr,hu,hy,id,it,ja,ko,lt,nl,pl,pt,ru,sv,th,tr,uk,vi,zh \
             --translation-source "${{ github.workspace }}/kb-aspose/${{ github.event.inputs.article_path }}" \
-            --content-root "${{ github.workspace }}/kb-aspose/content"
+            --content-root "${{ github.workspace }}/kb-aspose/content" \
+            ${{ github.event.inputs.overwrite == 'true' && '--overwrite' || '' }}
 
       - name: Commit and push translations
         run: |
