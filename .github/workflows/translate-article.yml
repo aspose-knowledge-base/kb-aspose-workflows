@@ -41,6 +41,8 @@ jobs:
       - name: Run translation
         env:
           ONLINE_LLM_TOKEN: ${{ secrets.ONLINE_LLM_TOKEN }}
+          METRICS_API_KEY: ${{ secrets.METRICS_API_KEY }}
+          WEBSITE: aspose.com
         run: |
           cd agent-repo
           python3 -m scripts.run_kb_agent \
